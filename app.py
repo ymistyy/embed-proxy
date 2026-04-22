@@ -3,7 +3,6 @@ import requests
 import re
 import redis
 import json
-import time
 import tldextract
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -11,7 +10,7 @@ from flask_limiter.util import get_remote_address
 app = Flask(__name__)
 
 # ----------------------------
-# Redis cache (speed boost)
+# Redis cache
 # ----------------------------
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
@@ -27,13 +26,13 @@ limiter = Limiter(
 )
 
 # ----------------------------
-# URL validation
+# safety
 # ----------------------------
-URL_REGEX = re.compile(r"^https?://")
+ID_REGEX = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 # ----------------------------
-# Platform detection
+# Platform detection from URL
 # ----------------------------
 def detect_platform(url):
     domain = tldextract.extract(url).domain.lower()
@@ -48,7 +47,7 @@ def detect_platform(url):
 
 
 # ----------------------------
-# Platform icons
+# icon mapping
 # ----------------------------
 def get_icon(platform):
     return {
@@ -60,20 +59,12 @@ def get_icon(platform):
 
 
 # ----------------------------
-# Anti-bot protection
-# ----------------------------
-def is_bad_bot(ua):
-    bad = ["curl", "wget", "python-requests", "http-client", "bot"]
-    return any(b in ua.lower() for b in bad)
-
-
-# ----------------------------
-# Metadata extraction (OG tags)
+# metadata (cached)
 # ----------------------------
 def get_meta(url):
-    cache_key = f"meta:{url}"
+    key = f"meta:{url}"
 
-    cached = r.get(cache_key)
+    cached = r.get(key)
     if cached:
         return json.loads(cached)
 
@@ -95,7 +86,7 @@ def get_meta(url):
             "url": url
         }
 
-        r.setex(cache_key, CACHE_TTL, json.dumps(data))
+        r.setex(key, CACHE_TTL, json.dumps(data))
         return data
 
     except:
@@ -107,25 +98,42 @@ def get_meta(url):
 
 
 # ----------------------------
-# MAIN ROUTE
+# URL builders (NEW CORE LOGIC)
 # ----------------------------
-@app.route("/<path:url>")
+def build_url(route, value):
+    if not ID_REGEX.match(value):
+        return None
+
+    if route == "reel":
+        return f"https://www.instagram.com/reel/{value}/"
+
+    if route == "p":
+        return f"https://www.instagram.com/p/{value}/"
+
+    if route == "tiktok":
+        return f"https://www.tiktok.com/@user/video/{value}"
+
+    if route == "x":
+        return f"https://x.com/i/status/{value}"
+
+    return None
+
+
+# ----------------------------
+# MAIN ROUTE (CLEAN VERSION)
+# ----------------------------
+@app.route("/<route>/<value>/")
 @limiter.limit("30 per minute")
-def proxy(url):
+def proxy(route, value):
     ua = request.headers.get("User-Agent", "")
-    target_url = url
 
-    # ----------------------------
-    # safety checks
-    # ----------------------------
-    if not URL_REGEX.match(target_url):
-        return "Invalid URL", 400
+    url = build_url(route, value)
 
-    if is_bad_bot(ua):
-        return "Blocked", 403
+    if not url:
+        return "Invalid request", 400
 
-    platform = detect_platform(target_url)
-    meta = get_meta(target_url)
+    platform = detect_platform(url)
+    meta = get_meta(url)
     icon = get_icon(platform)
 
     # ----------------------------
@@ -141,7 +149,6 @@ def proxy(url):
             <meta property="og:type" content="website">
             <meta name="theme-color" content="#5865F2">
 
-            <!-- platform icon hint -->
             <link rel="icon" href="{icon}">
         </head>
         <body></body>
@@ -149,16 +156,14 @@ def proxy(url):
         """
         return Response(html, mimetype="text/html")
 
-    # ----------------------------
     # normal users → redirect
-    # ----------------------------
-    return redirect(target_url, code=302)
+    return redirect(url, code=302)
 
 
 # ----------------------------
 @app.route("/")
 def home():
-    return "PRO Embed Proxy running"
+    return "PRO Embed Proxy running (clean routes enabled)"
 
 
 @app.errorhandler(429)
