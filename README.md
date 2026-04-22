@@ -41,7 +41,9 @@ The server will start on:
 
 http://0.0.0.0:3000
 
-##Usage
+---
+
+Usage
 
 Replace any social media URL with your domain:
 
@@ -53,6 +55,8 @@ Instagram
 TikTok
 X (Twitter)
 Any website with OpenGraph metadata
+
+---
 
 ##Deployment
 
