@@ -1,0 +1,5 @@
+Flask
+requests
+redis
+flask-limiter
+tldextract
