@@ -67,7 +67,7 @@ Some platforms may limit or block metadata scraping
 Embeds depend on OpenGraph tags being available
 Performance improves significantly with Redis caching enabled
 
-##Notes
+Note!
 Some platforms may limit or block metadata scraping
 Embeds depend on OpenGraph tags being available
 Performance improves significantly with Redis caching enabled
