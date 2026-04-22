@@ -2,7 +2,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const ua = request.headers.get("User-Agent") || "";
-
     const path = url.pathname.split("/").filter(Boolean);
 
     if (path.length < 2) {
@@ -10,14 +9,14 @@ export default {
     }
 
     const route = path[0];
-    const value = path[1];
+    const value = decodeURIComponent(path.slice(1).join("/"));
 
-    // ----------------------------
-    // Build target URL
-    // ----------------------------
     let target = "";
     let platform = "generic";
 
+    // ----------------------------
+    // ROUTES
+    // ----------------------------
     if (route === "reel") {
       target = `https://www.instagram.com/reel/${value}/`;
       platform = "instagram";
@@ -27,11 +26,11 @@ export default {
       platform = "instagram";
     } 
     else if (route === "tiktok") {
-      target = `https://www.tiktok.com/@user/video/${value}`;
+      target = value;
       platform = "tiktok";
     } 
     else if (route === "x") {
-      target = `https://x.com/i/status/${value}`;
+      target = value;
       platform = "x";
     } 
     else {
@@ -39,88 +38,32 @@ export default {
     }
 
     // ----------------------------
-    // KV CACHE CHECK (NEW)
+    // CACHE
     // ----------------------------
     const cacheKey = `meta:${route}:${value}`;
-    const cached = await env.META_CACHE.get(cacheKey);
+    let data = await env.META_CACHE.get(cacheKey, "json");
 
-    let data;
+    if (!data) {
+      data = await fetchMeta(platform, target);
 
-    if (cached) {
-      data = JSON.parse(cached);
-    } else {
-      // fetch OG
-      const res = await fetch(target, {
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      });
-
-      const html = await res.text();
-
-      function extract(prop) {
-        const match = html.match(
-          new RegExp(`property="${prop}" content="(.*?)"`)
-        );
-        return match ? match[1] : null;
-      }
-
-      data = {
-        title: extract("og:title") || "Shared content",
-        image: extract("og:image"),
-        url: target,
-        platform
-      };
-
-      // store in KV (30 min cache)
       await env.META_CACHE.put(
         cacheKey,
         JSON.stringify(data),
-        { expirationTtl: 60 * 30 }
+        { expirationTtl: 60 * 60 }
       );
     }
 
-    // ----------------------------
-    // PLATFORM THEMES (NEW)
-    // ----------------------------
-    let theme = {
-      color: "#5865F2",
-      icon: ""
-    };
-
-    if (platform === "instagram") {
-      theme.color = "#E1306C";
-      theme.icon = "https://cdn-icons-png.flaticon.com/512/2111/2111463.png";
-    }
-
-    if (platform === "tiktok") {
-      theme.color = "#000000";
-      theme.icon = "https://cdn-icons-png.flaticon.com/512/3046/3046121.png";
-    }
-
-    if (platform === "x") {
-      theme.color = "#000000";
-      theme.icon = "https://cdn-icons-png.flaticon.com/512/5968/5968958.png";
-    }
+    const theme = getTheme(platform);
 
     // ----------------------------
-    // DISCORD EMBED MODE
+    // DISCORD MODE
     // ----------------------------
     if (ua.includes("Discordbot")) {
-      return new Response(`
-        <html>
-        <head>
-          <meta property="og:title" content="${data.title}">
-          <meta property="og:image" content="${data.image}">
-          <meta property="og:url" content="${data.url}">
-          <meta property="og:type" content="website">
-          <meta name="theme-color" content="${theme.color}">
-          <link rel="icon" href="${theme.icon}">
-        </head>
-        <body></body>
-        </html>
-      `, {
-        headers: { "content-type": "text/html" }
+      return new Response(renderHTML(data, theme), {
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "cache-control": "public, max-age=300"
+        }
       });
     }
 
@@ -130,3 +73,172 @@ export default {
     return Response.redirect(target, 302);
   }
 };
+
+// ----------------------------
+// META ENGINE
+// ----------------------------
+async function fetchMeta(platform, target) {
+  try {
+    // ---------- TIKTOK ----------
+    if (platform === "tiktok") {
+      const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`);
+      const json = await res.json();
+
+      return {
+        title: json.title || "TikTok video",
+        image: json.thumbnail_url,
+        url: target
+      };
+    }
+
+    // ---------- X ----------
+    if (platform === "x") {
+      const res = await fetch(`https://publish.twitter.com/oembed?url=${encodeURIComponent(target)}`);
+      const json = await res.json();
+
+      return {
+        title: json.author_name ? `Post by ${json.author_name}` : "Post on X",
+        image: json.thumbnail_url || fallbackImage(),
+        url: target
+      };
+    }
+
+    // ---------- INSTAGRAM ----------
+    return await fetchInstagram(target);
+
+  } catch {
+    return fallbackData(target);
+  }
+}
+
+// ----------------------------
+// INSTAGRAM SCRAPER (RETRY)
+// ----------------------------
+async function fetchInstagram(url) {
+  let html = await fetchHTML(url);
+
+  let title = extractOG(html, "og:title");
+  let image = extractOG(html, "og:image");
+
+  // retry met embed
+  if (!image) {
+    html = await fetchHTML(url + "embed/");
+    image = extractOG(html, "og:image");
+  }
+
+  return {
+    title: title || "Instagram post",
+    image: image || fallbackImage(),
+    url
+  };
+}
+
+// ----------------------------
+// FETCH HTML
+// ----------------------------
+async function fetchHTML(url) {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0"
+    }
+  });
+  return await res.text();
+}
+
+// ----------------------------
+// OG PARSER
+// ----------------------------
+function extractOG(html, prop) {
+  const match = html.match(
+    new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["'](.*?)["']`, "i")
+  );
+  return match ? match[1] : null;
+}
+
+// ----------------------------
+// FALLBACKS
+// ----------------------------
+function fallbackImage() {
+  return "https://dummyimage.com/800x600/111/fff&text=Video";
+}
+
+function fallbackData(url) {
+  return {
+    title: "Bekijk deze post",
+    image: fallbackImage(),
+    url
+  };
+}
+
+// ----------------------------
+// THEME
+// ----------------------------
+function getTheme(platform) {
+  if (platform === "instagram") {
+    return {
+      color: "#E1306C",
+      icon: "https://cdn-icons-png.flaticon.com/512/2111/2111463.png"
+    };
+  }
+
+  if (platform === "tiktok") {
+    return {
+      color: "#000000",
+      icon: "https://cdn-icons-png.flaticon.com/512/3046/3046121.png"
+    };
+  }
+
+  if (platform === "x") {
+    return {
+      color: "#000000",
+      icon: "https://cdn-icons-png.flaticon.com/512/5968/5968958.png"
+    };
+  }
+
+  return {
+    color: "#5865F2",
+    icon: ""
+  };
+}
+
+// ----------------------------
+// DISCORD HTML (KEY PART)
+// ----------------------------
+function renderHTML(data, theme) {
+  const title = escapeAttr(data.title || "Bekijk deze video");
+  const image = escapeAttr(data.image || fallbackImage());
+  const url = escapeAttr(data.url || "");
+  const color = escapeAttr(theme.color || "#5865F2");
+  const icon = escapeAttr(theme.icon || "");
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+
+<meta property="og:title" content="${title}">
+<meta property="og:description" content="▶ Klik om te bekijken">
+<meta property="og:image" content="${image}">
+<meta property="og:url" content="${url}">
+<meta property="og:type" content="video.other">
+
+<meta property="twitter:card" content="summary_large_image">
+<meta property="twitter:title" content="${title}">
+<meta property="twitter:image" content="${image}">
+
+<meta name="theme-color" content="${color}">
+<link rel="icon" href="${icon}">
+
+</head>
+<body></body>
+</html>
+`.trim();
+}
+
+// ----------------------------
+// ESCAPE
+// ----------------------------
+function escape(str = "") {
+  return str.replace(/"/g, "&quot;");
+}
