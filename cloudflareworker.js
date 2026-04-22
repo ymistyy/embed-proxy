@@ -14,9 +14,6 @@ export default {
     let target = "";
     let platform = "generic";
 
-    // ----------------------------
-    // ROUTES
-    // ----------------------------
     if (route === "reel") {
       target = `https://www.instagram.com/reel/${value}/`;
       platform = "instagram";
@@ -37,9 +34,6 @@ export default {
       return new Response("Invalid route", { status: 400 });
     }
 
-    // ----------------------------
-    // CACHE
-    // ----------------------------
     const cacheKey = `meta:${route}:${value}`;
     let data = await env.META_CACHE.get(cacheKey, "json");
 
@@ -55,9 +49,6 @@ export default {
 
     const theme = getTheme(platform);
 
-    // ----------------------------
-    // DISCORD MODE
-    // ----------------------------
     if (ua.includes("Discordbot")) {
       return new Response(renderHTML(data, theme), {
         headers: {
@@ -67,9 +58,6 @@ export default {
       });
     }
 
-    // ----------------------------
-    // NORMAL USERS
-    // ----------------------------
     return Response.redirect(target, 302);
   }
 };
@@ -79,31 +67,28 @@ export default {
 // ----------------------------
 async function fetchMeta(platform, target) {
   try {
-    // ---------- TIKTOK ----------
     if (platform === "tiktok") {
       const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`);
       const json = await res.json();
 
       return {
-        title: json.title || "TikTok video",
+        title: cleanTitle(json.title) || "▶ Watch this TikTok",
         image: json.thumbnail_url,
         url: target
       };
     }
 
-    // ---------- X ----------
     if (platform === "x") {
       const res = await fetch(`https://publish.twitter.com/oembed?url=${encodeURIComponent(target)}`);
       const json = await res.json();
 
       return {
-        title: json.author_name ? `Post by ${json.author_name}` : "Post on X",
+        title: cleanTitle(json.title || json.author_name) || "▶ View this post",
         image: json.thumbnail_url || fallbackImage(),
         url: target
       };
     }
 
-    // ---------- INSTAGRAM ----------
     return await fetchInstagram(target);
 
   } catch {
@@ -112,7 +97,7 @@ async function fetchMeta(platform, target) {
 }
 
 // ----------------------------
-// INSTAGRAM SCRAPER (RETRY)
+// INSTAGRAM
 // ----------------------------
 async function fetchInstagram(url) {
   let html = await fetchHTML(url);
@@ -120,17 +105,28 @@ async function fetchInstagram(url) {
   let title = extractOG(html, "og:title");
   let image = extractOG(html, "og:image");
 
-  // retry met embed
   if (!image) {
     html = await fetchHTML(url + "embed/");
     image = extractOG(html, "og:image");
   }
 
   return {
-    title: title || "Instagram post",
+    title: cleanTitle(title) || "▶ Watch this Instagram video",
     image: image || fallbackImage(),
     url
   };
+}
+
+// ----------------------------
+// CLEAN TITLE
+// ----------------------------
+function cleanTitle(str = "") {
+  return String(str)
+    .replace(/#\w+/g, "")        // remove hashtags
+    .replace(/\n/g, " ")         // remove line breaks
+    .replace(/\s+/g, " ")        // normalize spaces
+    .trim()
+    .slice(0, 100);              // limit length
 }
 
 // ----------------------------
@@ -164,7 +160,7 @@ function fallbackImage() {
 
 function fallbackData(url) {
   return {
-    title: "Bekijk deze post",
+    title: "▶ Watch this content",
     image: fallbackImage(),
     url
   };
@@ -202,10 +198,10 @@ function getTheme(platform) {
 }
 
 // ----------------------------
-// DISCORD HTML (KEY PART)
+// RENDER HTML
 // ----------------------------
 function renderHTML(data, theme) {
-  const title = escapeAttr(data.title || "Bekijk deze video");
+  const title = escapeAttr(data.title || "▶ Watch this video");
   const image = escapeAttr(data.image || fallbackImage());
   const url = escapeAttr(data.url || "");
   const color = escapeAttr(theme.color || "#5865F2");
@@ -218,7 +214,7 @@ function renderHTML(data, theme) {
 <meta charset="UTF-8">
 
 <meta property="og:title" content="${title}">
-<meta property="og:description" content="▶ Klik om te bekijken">
+<meta property="og:description" content="▶ Click to watch">
 <meta property="og:image" content="${image}">
 <meta property="og:url" content="${url}">
 <meta property="og:type" content="video.other">
@@ -237,8 +233,13 @@ function renderHTML(data, theme) {
 }
 
 // ----------------------------
-// ESCAPE
+// SAFE ESCAPE
 // ----------------------------
-function escape(str = "") {
-  return str.replace(/"/g, "&quot;");
+function escapeAttr(str = "") {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
